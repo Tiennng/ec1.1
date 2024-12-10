@@ -14,20 +14,24 @@
 #endif
 #pragma config FPLLIDIV = DIV_2 // PLL Input Divider (2x Divider)
 #pragma config FPLLMUL = MUL_20 // PLL Multiplier (20x Multiplier)
-#pragma config FPLLODIV = DIV_1 // System PLL Output Clock Divider 
-                                //(PLL Divide by 1)
-#pragma config FNOSC = PRIPLL   // Oscillator Selection Bits (Primary Osc w/PLL 
-                                //(XT+,HS+,EC+PLL))
-#pragma config FSOSCEN = OFF    // Secondary Oscillator Enable (Disabled)
-#pragma config POSCMOD = XT     // Primary Oscillator Configuration (XT osc mode)
-#pragma config FPBDIV = DIV_8   // Peripheral Clock Divisor (Pb_Clk is Sys_Clk/8)   
+#pragma config FPLLODIV = DIV_1 // System PLL Output Clock Divider
+//(PLL Divide by 1)
+#pragma config FNOSC = PRIPLL // Oscillator Selection Bits (Primary Osc w/PLL
+//(XT+,HS+,EC+PLL))
+#pragma config FSOSCEN = OFF // Secondary Oscillator Enable (Disabled)
+#pragma config POSCMOD = XT // Primary Oscillator Configuration (XT osc mode)
+#pragma config JTAGEN = OFF
 
 /*----------------------------------------------------------------------------*/
-#include <xc.h>     //Microchip XC processor header which links to the 
-                    //PIC32MX370512L header
+#include <xc.h> //Microchip XC processor header which links to the
+//PIC32MX370512L header
+#include <sys/attribs.h>
 #include "config.h" // Basys MX3 configuration header
-#include "lcd.h"    // NOTE: utils.c and utils.h must also be in your project 
-                    //to use lcd.c
+#include "lcd.h" // NOTE: utils.c and utils.h must also be in your project
+//to use lcd.c
+#include"ssd.h"
+#include"mic.h"
+
 
 /* ----------------------- Custom types ------------------------------------- */
 enum mode{MODE1, MODE2, MODE3, MODE4};
@@ -46,11 +50,11 @@ void SWT_Init();
 
 void logic_button_presses(enum mode *modePtr);
 /* ------------------------ Constant Definitions ---------------------------- */
+#define CLK (10000000)
 #define SYS_FREQ (80000000L) // 80MHz system clock
 #define _80Mhz_ (80000000L)
 #define LOOPS_NEEDED_TO_DELAY_ONE_MS_AT_80MHz 1426
 #define LOOPS_NEEDED_TO_DELAY_ONE_MS (LOOPS_NEEDED_TO_DELAY_ONE_MS_AT_80MHz * (SYS_FREQ / _80Mhz_))
-#define CLK (10000000)
 /* The Basys reference manual shows to which pin of the processor every IO 
 connects. 
  BtnC connects to Port F pin 0. PORTF reads output values from Port F pins.
@@ -63,7 +67,7 @@ connects.
 #define sw7 PORTBbits.RB9
 #define sw6 PORTBbits.RB10
 #define MAX_BITS 8
-#define TMR_TIME2    0.025 // 100 ms for each tick
+
 
 /* -------------------- Global Variable Declarations ------------------------ */
 char buttonsLocked = FALSE;
@@ -74,8 +78,7 @@ int main(void)
     /*-------------------- Port and State Initialization ---------------------*/
     initialize_ports();
     initialize_output_states();
-    Timer2Setup();
-    
+    timer2_init();
     enum mode current_mode = MODE1;
 
 
@@ -106,6 +109,30 @@ int main(void)
     }
 }
 /* ---------------------- Function Definitions ------------------------------ */
+void timer2_init() {
+    T2CONbits.ON = 0;       // Turn off Timer 2 during configuration
+    T2CONbits.TCKPS = 0b111; // Prescaler 1:256
+    T2CONbits.TCS = 0;      // Use internal PBCLK
+    TMR2 = 0;               // Clear Timer 2 register
+    PR2 = (1 * CLK) / (256 * 2); // Adjusted for 2 Hz
+    IPC2bits.T2IP = 4;      // Interrupt priority
+    IPC2bits.T2IS = 0;      // Interrupt subpriority
+    IFS0bits.T2IF = 0;      // Clear interrupt flag
+    IEC0bits.T2IE = 1;      // Enable Timer 2 interrupt
+    T2CONbits.ON = 1;       // Turn on Timer 2
+}
+void __ISR(_TIMER_2_VECTOR, IPL4AUTO) Timer2ISR(void) {
+    
+    IFS0bits.T2IF = 0; // Clear Timer 2 interrupt flag
+    if (sw6) {
+        // If SW6 = 1, increase the frequency (e.g., set PR2 for 4 Hz)
+        PR2 = (1 * CLK) / (256 * 4);  // Adjust for higher frequency
+    } else {
+        // Default frequency (e.g., 1 Hz)
+        PR2 = (1 * CLK) / (256 * 1);
+    }
+}
+
 void initialize_ports()
 {
     // Required to use Pin RA0 (connected to LED 0) as IO
@@ -174,21 +201,7 @@ void delay_ms(int milliseconds)
     for (i = 0; i < milliseconds * LOOPS_NEEDED_TO_DELAY_ONE_MS; i++) 
     {}
 }
-void timer2_init() {
-    T2CONbits.ON = 0;       // Turn off Timer 2 during configuration
-    T2CONbits.TCKPS = 0b111; // Prescaler 1:256
-    T2CONbits.TCS = 0;      // Use internal PBCLK
-    TMR2 = 0;               // Clear Timer 2 register
-    // this pre register is getting the period register.
-    // 10,000,000/256 = 39063 hz which then / period register makes 1hz which is
-    // one second
-    PR2 = (1 * CLK) / 256;
-    IPC2bits.T2IP = 4;      // Interrupt priority
-    IPC2bits.T2IS = 0;      // Interrupt subpriority
-    IFS0bits.T2IF = 0;      // Clear interrupt flag
-    IEC0bits.T2IE = 1;      // Enable Timer 2 interrupt
-    T2CONbits.ON = 1;       // Turn on Timer 2
-}
+
 
 void logic_mode_one(){
     
@@ -206,19 +219,7 @@ void logic_mode_two() {
     LCD_WriteStringAtPos("    Group#17    ", 0, 0); // line 0, position 0
     LCD_WriteStringAtPos("     Mode 2     ", 1, 0); // line 1, position 0
 
-    // Define the initial pattern
-    
-//    if (sw7 == 1) {
-//        LCD_WriteStringAtPos("SW7: Pressed   ", 0, 0); // Update line 0 with switch 7 status
-//    } else {
-//        LCD_WriteStringAtPos("SW7: Not Pressed", 0, 0); // Update line 0 with switch 7 status
-//    }
-//
-//    if (sw6 == 1) {
-//        LCD_WriteStringAtPos("SW6: Pressed   ", 1, 0); // Update line 1 with switch 6 status
-//    } else {
-//        LCD_WriteStringAtPos("SW6: Not Pressed", 1, 0); // Update line 1 with switch 6 status
-//    }
+
     #define INITIAL_PATTERN 0x00  // Example: 00000000
     
 
@@ -237,7 +238,7 @@ void logic_mode_two() {
                     
                 case 1:  // SW6 is not pressed
                     for (int i = 0; i < 8; i++) {
-                        delay_ms(250);
+                        delay_ms(500);
                         LATA >>= 1;
                         if (LATA == 0) {
                             LATA = INITIAL_PATTERN;
@@ -261,7 +262,7 @@ void logic_mode_two() {
                     
                 case 1:  // SW6 is not pressed
                     for (int i = 0; i < 8; i++) {
-                        delay_ms(250);
+                        delay_ms(500);
                         LATA <<= 1;
                         if (LATA == 0) {
                             LATA = INITIAL_PATTERN;
@@ -294,7 +295,7 @@ void logic_mode_four() {
         uint8_t accumulated_pattern = 0x00;  
     for (int i = 0; i < 4; i++) {  
         delay_ms(500);
-        accumulated_pattern |= (0x03 << (2 * i));  
+        accumulated_pattern |= (0x03 << (1 * i));  
         LATA = accumulated_pattern;
         if (LATA > 0xFF) {
             LATA = 0xFF;  
@@ -326,7 +327,7 @@ void logic_mode_four() {
     if (sw7 == 0 && sw6 ) {
     uint8_t accumulated_pattern = 0x00;  
     for (int i = 0; i < 4; i++) {  
-        delay_ms(250);
+        delay_ms(500);
         LATA= LATA >>1|0xC0;
         //TA = accumulated_pattern;
         //cumulated_pattern >>= 2;
@@ -358,12 +359,6 @@ void logic_button_presses(enum mode *modePtr){
 }
 
 
-void __ISR(_TIMER_2_VECTOR, IPL4AUTO) Timer2ISR(void) {
-    if(sw6){
-        delay_ms(250);
-    } 
-    IFS0bits.T2IF = 0; // Clear Timer 2 interrupt flag
-}
 
 
 
